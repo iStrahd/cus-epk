@@ -5,18 +5,32 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CUS — EPK</title>
   <style>
-    /* Background is transparent so the Squarespace page colour shows through.
-       Change --page-bg if you open this page on its own and want a colour. */
-    :root { --page-bg: transparent; --placeholder: rgba(128, 128, 128, 0.08); }
+    /* --page-bg fills the space around slides that don't match the screen shape. */
+    :root { --page-bg: #000; --placeholder: rgba(128, 128, 128, 0.08); }
     html, body { margin: 0; padding: 0; background: var(--page-bg); }
+    html { scroll-snap-type: y proximity; scrollbar-width: none; }
+    html::-webkit-scrollbar { display: none; }
     body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
 
-    #back { display: none; padding: 14px 16px; }
-    #back a { color: inherit; text-decoration: none; font-size: 15px; }
-    #back a:hover { text-decoration: underline; }
-    body.standalone #back { display: block; }
+    /* Small "back to the site" button floating over the top-left corner. */
+    #back {
+      position: fixed; top: 12px; left: 12px; z-index: 10;
+      padding: 7px 13px; border-radius: 999px;
+      background: rgba(0, 0, 0, 0.6); border: 1px solid rgba(255, 255, 255, 0.3);
+      color: #fff; font-size: 13px; letter-spacing: 0.02em; text-decoration: none;
+      opacity: 0.35; transition: opacity 0.2s;
+    }
+    #back:hover, #back:focus-visible { opacity: 1; }
+    @media (hover: none) { #back { opacity: 0.6; } }
+    #back[hidden] { display: none; }
 
-    .page { position: relative; width: 100%; background: var(--placeholder); overflow: hidden; }
+    /* Each slide is as large as possible while still fitting entirely on screen. */
+    .page {
+      position: relative; margin: 0 auto; background: var(--placeholder); overflow: hidden;
+      width: min(100%, calc(100vh * var(--ar)));
+      width: min(100%, calc(100dvh * var(--ar)));
+      scroll-snap-align: start;
+    }
     .page canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
     .page a.link { position: absolute; display: block; z-index: 2; -webkit-tap-highlight-color: rgba(255, 255, 255, 0.15); }
 
@@ -25,8 +39,7 @@
   </style>
 </head>
 <body>
-  <!-- Only shown when someone opens this page directly instead of through Squarespace -->
-  <nav id="back"><a href="https://YOUR-SITE.com" target="_top">← Back to CUS</a></nav>
+  <a id="back" href="/" target="_top" hidden>← Home</a>
   <main id="pages"></main>
   <p id="error">The EPK couldn't load here. <a href="epk.pdf" target="_blank" rel="noopener">Open the PDF instead</a>.</p>
 
@@ -41,19 +54,19 @@
     const NAV = { bio: 2, videos: 3, music: 4, live: 5, contact: 7 };
     const NAV_BUTTON = { width: 210, height: 78 }; // pill size in PDF units (slides are 1920 × 1080)
 
+    // Where "← Home" goes. Inside Squarespace it uses the site the EPK is embedded on;
+    // SITE_URL is the fallback for when someone opens this page directly.
+    const SITE_URL = "";
+
     GlobalWorkerOptions.workerSrc = "./pdfjs/pdf.worker.mjs";
     const embedded = window.self !== window.top;
-    if (!embedded) document.body.classList.add("standalone");
+
+    const back = document.getElementById("back");
+    const home = embedded && document.referrer ? new URL(document.referrer).origin + "/" : SITE_URL;
+    if (home) { back.href = home; back.hidden = false; }
 
     const container = document.getElementById("pages");
     const pages = []; // { page, el, canvas, renderedWidth, task }
-
-    // Tell the Squarespace page how tall we are, so the iframe never needs its own scrollbar.
-    function postHeight() {
-      if (embedded) {
-        window.parent.postMessage({ type: "epk-height", height: document.documentElement.scrollHeight }, "*");
-      }
-    }
 
     async function renderPage(p) {
       const cssWidth = p.el.clientWidth;
@@ -88,16 +101,8 @@
       p.renderedWidth = 0;
     }
 
-    // Scroll to a page. Inside Squarespace the parent page does the scrolling,
-    // so ask it to; if it doesn't answer, scroll ourselves.
-    let scrollAcked = false;
     function goToPage(index) {
-      const el = pages[index]?.el;
-      if (!el) return;
-      if (!embedded) return el.scrollIntoView({ behavior: "smooth" });
-      scrollAcked = false;
-      window.parent.postMessage({ type: "epk-scroll", top: el.offsetTop }, "*");
-      setTimeout(() => { if (!scrollAcked) el.scrollIntoView({ behavior: "smooth" }); }, 300);
+      pages[index]?.el.scrollIntoView({ behavior: "smooth" });
     }
 
     // Absolutely-positioned <a> over a rectangle given in PDF coordinates.
@@ -189,6 +194,7 @@
         const el = document.createElement("section");
         el.className = "page";
         el.style.aspectRatio = `${width} / ${height}`;
+        el.style.setProperty("--ar", width / height);
         el.dataset.index = i - 1;
         container.append(el);
         const p = { page, el, canvas: null, renderedWidth: 0, task: null };
@@ -197,8 +203,6 @@
         page.getAnnotations({ intent: "display" }).then((annots) => addLinks(pdf, p, annots));
         addNavLinks(p);
       }
-      postHeight();
-
       // Render the pages on screen plus their neighbours; release the ones far away.
       const visible = new Set();
       const update = () => {
@@ -216,29 +220,17 @@
       pages.forEach((p) => observer.observe(p.el));
       if (pages[0]) { visible.add(0); update(); }
 
-      let lastWidth = container.clientWidth;
+      // Slide size depends on the window, so re-render at the new size once resizing settles.
       let timer;
       window.addEventListener("resize", () => {
-        postHeight();
         clearTimeout(timer);
-        timer = setTimeout(() => {
-          if (container.clientWidth === lastWidth) return; // ignore mobile address-bar height changes
-          lastWidth = container.clientWidth;
-          update();
-        }, 200);
+        timer = setTimeout(update, 200);
       });
     }
-
-    window.addEventListener("message", (e) => {
-      if (e.data?.type === "epk-height-request") postHeight();
-      if (e.data?.type === "epk-scroll-ack") scrollAcked = true;
-    });
-    window.addEventListener("load", postHeight);
 
     load().catch((e) => {
       console.error(e);
       document.getElementById("error").style.display = "block";
-      postHeight();
     });
   </script>
 </body>

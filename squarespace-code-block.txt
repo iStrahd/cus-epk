@@ -1,20 +1,11 @@
-<iframe id="epk-frame" src="https://istrahd.github.io/cus-epk/" title="CUS EPK" scrolling="no"
-  style="display:block;width:100%;border:0;overflow:hidden;aspect-ratio:1920 / 7560;"></iframe>
-<script>
-  (function () {
-    var HEADER_OFFSET = 0; // set to your fixed header's height (px) if it covers the top of a page after a jump
-    window.addEventListener("message", function (e) {
-      var f = document.getElementById("epk-frame");
-      if (!f || e.source !== f.contentWindow || !e.data) return;
-      if (e.data.type === "epk-height") {
-        f.style.height = e.data.height + "px";
-        f.style.aspectRatio = "auto";
-      }
-      if (e.data.type === "epk-scroll") {
-        var top = f.getBoundingClientRect().top + window.pageYOffset + e.data.top - HEADER_OFFSET;
-        window.scrollTo({ top: top, behavior: "smooth" });
-        f.contentWindow.postMessage({ type: "epk-scroll-ack" }, "*");
-      }
-    });
-  })();
-</script>
+<style>
+  /* Full-screen EPK on the live site. Not applied while editing in Squarespace,
+     so the editor stays usable. */
+  body:not(.sqs-edit-mode-active):not(.sqs-is-page-editing) #epk-frame {
+    position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; height: 100dvh;
+    z-index: 2147483000;
+  }
+  body:not(.sqs-edit-mode-active):not(.sqs-is-page-editing):has(#epk-frame) { overflow: hidden !important; }
+  #epk-frame { display: block; width: 100%; height: 600px; border: 0; background: #000; }
+</style>
+<iframe id="epk-frame" src="https://istrahd.github.io/cus-epk/" title="CUS EPK"></iframe>
