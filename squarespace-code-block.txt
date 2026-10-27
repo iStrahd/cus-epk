@@ -1,0 +1,20 @@
+<iframe id="epk-frame" src="https://istrahd.github.io/cus-epk/" title="CUS EPK" scrolling="no"
+  style="display:block;width:100%;border:0;overflow:hidden;aspect-ratio:1920 / 7560;"></iframe>
+<script>
+  (function () {
+    var HEADER_OFFSET = 0; // set to your fixed header's height (px) if it covers the top of a page after a jump
+    window.addEventListener("message", function (e) {
+      var f = document.getElementById("epk-frame");
+      if (!f || e.source !== f.contentWindow || !e.data) return;
+      if (e.data.type === "epk-height") {
+        f.style.height = e.data.height + "px";
+        f.style.aspectRatio = "auto";
+      }
+      if (e.data.type === "epk-scroll") {
+        var top = f.getBoundingClientRect().top + window.pageYOffset + e.data.top - HEADER_OFFSET;
+        window.scrollTo({ top: top, behavior: "smooth" });
+        f.contentWindow.postMessage({ type: "epk-scroll-ack" }, "*");
+      }
+    });
+  })();
+</script>

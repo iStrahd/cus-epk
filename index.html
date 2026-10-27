@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CUS — EPK</title>
+  <style>
+    /* Background is transparent so the Squarespace page colour shows through.
+       Change --page-bg if you open this page on its own and want a colour. */
+    :root { --page-bg: transparent; --placeholder: rgba(128, 128, 128, 0.08); }
+    html, body { margin: 0; padding: 0; background: var(--page-bg); }
+    body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+
+    #back { display: none; padding: 14px 16px; }
+    #back a { color: inherit; text-decoration: none; font-size: 15px; }
+    #back a:hover { text-decoration: underline; }
+    body.standalone #back { display: block; }
+
+    .page { position: relative; width: 100%; background: var(--placeholder); overflow: hidden; }
+    .page canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+    .page a.link { position: absolute; display: block; z-index: 2; -webkit-tap-highlight-color: rgba(255, 255, 255, 0.15); }
+
+    #error { display: none; padding: 24px 16px; text-align: center; }
+    #error a { color: inherit; }
+  </style>
+</head>
+<body>
+  <!-- Only shown when someone opens this page directly instead of through Squarespace -->
+  <nav id="back"><a href="https://YOUR-SITE.com" target="_top">← Back to CUS</a></nav>
+  <main id="pages"></main>
+  <p id="error">The EPK couldn't load here. <a href="epk.pdf" target="_blank" rel="noopener">Open the PDF instead</a>.</p>
+
+  <script type="module">
+    import { getDocument, GlobalWorkerOptions } from "./pdfjs/pdf.mjs";
+
+    const PDF_URL = "epk.pdf";
+    const MAX_CANVAS_PIXELS = 16_000_000; // stays under iOS Safari's canvas limit
+
+    // Nav buttons printed on the slides → the page number each one jumps to.
+    // Update these if the slide order changes.
+    const NAV = { bio: 2, videos: 3, music: 4, live: 5, contact: 7 };
+    const NAV_BUTTON = { width: 210, height: 78 }; // pill size in PDF units (slides are 1920 × 1080)
+
+    GlobalWorkerOptions.workerSrc = "./pdfjs/pdf.worker.mjs";
+    const embedded = window.self !== window.top;
+    if (!embedded) document.body.classList.add("standalone");
+
+    const container = document.getElementById("pages");
+    const pages = []; // { page, el, canvas, renderedWidth, task }
+
+    // Tell the Squarespace page how tall we are, so the iframe never needs its own scrollbar.
+    function postHeight() {
+      if (embedded) {
+        window.parent.postMessage({ type: "epk-height", height: document.documentElement.scrollHeight }, "*");
+      }
+    }
+
+    async function renderPage(p) {
+      const cssWidth = p.el.clientWidth;
+      if (!cssWidth || p.renderedWidth === cssWidth || p.task) return;
+      const base = p.page.getViewport({ scale: 1 });
+      let scale = (cssWidth / base.width) * (window.devicePixelRatio || 1);
+      const pixels = base.width * base.height * scale * scale;
+      if (pixels > MAX_CANVAS_PIXELS) scale *= Math.sqrt(MAX_CANVAS_PIXELS / pixels);
+      const viewport = p.page.getViewport({ scale });
+
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.floor(viewport.width);
+      canvas.height = Math.floor(viewport.height);
+      p.task = p.page.render({ canvasContext: canvas.getContext("2d"), viewport, annotationMode: 0 });
+      try {
+        await p.task.promise;
+        p.canvas?.remove();
+        p.el.prepend(canvas);
+        p.canvas = canvas;
+        p.renderedWidth = cssWidth;
+      } catch (e) {
+        if (e?.name !== "RenderingCancelledException") console.error(e);
+      } finally {
+        p.task = null;
+      }
+    }
+
+    // Free pages far from the screen so phones don't run out of memory.
+    function releasePage(p) {
+      p.task?.cancel();
+      if (p.canvas) { p.canvas.width = p.canvas.height = 0; p.canvas.remove(); p.canvas = null; }
+      p.renderedWidth = 0;
+    }
+
+    // Scroll to a page. Inside Squarespace the parent page does the scrolling,
+    // so ask it to; if it doesn't answer, scroll ourselves.
+    let scrollAcked = false;
+    function goToPage(index) {
+      const el = pages[index]?.el;
+      if (!el) return;
+      if (!embedded) return el.scrollIntoView({ behavior: "smooth" });
+      scrollAcked = false;
+      window.parent.postMessage({ type: "epk-scroll", top: el.offsetTop }, "*");
+      setTimeout(() => { if (!scrollAcked) el.scrollIntoView({ behavior: "smooth" }); }, 300);
+    }
+
+    // Absolutely-positioned <a> over a rectangle given in PDF coordinates.
+    function placeLink(p, rect) {
+      const vp = p.page.getViewport({ scale: 1 });
+      const [x1, y1] = vp.convertToViewportPoint(rect[0], rect[1]);
+      const [x2, y2] = vp.convertToViewportPoint(rect[2], rect[3]);
+      const link = document.createElement("a");
+      link.className = "link";
+      Object.assign(link.style, {
+        left: (Math.min(x1, x2) / vp.width) * 100 + "%",
+        top: (Math.min(y1, y2) / vp.height) * 100 + "%",
+        width: (Math.abs(x2 - x1) / vp.width) * 100 + "%",
+        height: (Math.abs(y2 - y1) / vp.height) * 100 + "%",
+      });
+      p.el.append(link);
+      return link;
+    }
+
+    // Find the nav button labels in the page text and put a jump link over each pill.
+    // Also make any plain-text email address tappable.
+    async function addNavLinks(p) {
+      const { items } = await p.page.getTextContent();
+      for (const item of items) {
+        const email = item.str.match(/[\w.+-]+@[\w-]+\.[\w.]+/);
+        if (email) {
+          const [x, y] = [item.transform[4], item.transform[5]];
+          const link = placeLink(p, [x, y - item.height * 0.25, x + item.width, y + item.height]);
+          link.href = "mailto:" + email[0];
+          link.target = "_top";
+          link.setAttribute("aria-label", email[0]);
+          continue;
+        }
+        const target = NAV[item.str.trim().toLowerCase()];
+        if (!target) continue;
+        const cx = item.transform[4] + item.width / 2;
+        const cy = item.transform[5] + item.height * 0.35;
+        const link = placeLink(p, [
+          cx - NAV_BUTTON.width / 2, cy - NAV_BUTTON.height / 2,
+          cx + NAV_BUTTON.width / 2, cy + NAV_BUTTON.height / 2,
+        ]);
+        link.href = "#page-" + target;
+        link.setAttribute("aria-label", item.str.trim());
+        link.addEventListener("click", (e) => { e.preventDefault(); goToPage(target - 1); });
+      }
+    }
+
+    function addLinks(pdf, p, annotations) {
+      for (const a of annotations) {
+        if (a.subtype !== "Link" || (!a.url && !a.dest)) continue;
+        const link = placeLink(p, a.rect);
+        if (a.url) {
+          link.href = a.url;
+          if (/^(mailto|tel):/i.test(a.url)) {
+            link.target = "_top";
+          } else {
+            link.target = "_blank";
+            link.rel = "noopener";
+          }
+          link.setAttribute("aria-label", a.url.replace(/^mailto:/i, ""));
+        } else {
+          // Link to another page inside the EPK
+          link.href = "#";
+          link.addEventListener("click", async (e) => {
+            e.preventDefault();
+            const dest = typeof a.dest === "string" ? await pdf.getDestination(a.dest) : a.dest;
+            if (!dest) return;
+            const index = typeof dest[0] === "number" ? dest[0] : await pdf.getPageIndex(dest[0]);
+            goToPage(index);
+          });
+        }
+      }
+    }
+
+    async function load() {
+      const pdf = await getDocument({
+        url: PDF_URL,
+        cMapUrl: "./pdfjs/cmaps/",
+        cMapPacked: true,
+        standardFontDataUrl: "./pdfjs/standard_fonts/",
+        wasmUrl: "./pdfjs/wasm/",
+        iccUrl: "./pdfjs/iccs/",
+      }).promise;
+
+      // Lay out every page at its real proportions first, so the full height is known right away.
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const { width, height } = page.getViewport({ scale: 1 });
+        const el = document.createElement("section");
+        el.className = "page";
+        el.style.aspectRatio = `${width} / ${height}`;
+        el.dataset.index = i - 1;
+        container.append(el);
+        const p = { page, el, canvas: null, renderedWidth: 0, task: null };
+        pages.push(p);
+        el.id = "page-" + i;
+        page.getAnnotations({ intent: "display" }).then((annots) => addLinks(pdf, p, annots));
+        addNavLinks(p);
+      }
+      postHeight();
+
+      // Render the pages on screen plus their neighbours; release the ones far away.
+      const visible = new Set();
+      const update = () => {
+        const keep = new Set();
+        for (const i of visible) for (let j = i - 1; j <= i + 2; j++) if (pages[j]) keep.add(j);
+        pages.forEach((p, i) => (keep.has(i) ? renderPage(p) : releasePage(p)));
+      };
+      const observer = new IntersectionObserver((entries) => {
+        for (const e of entries) {
+          const i = Number(e.target.dataset.index);
+          e.isIntersecting ? visible.add(i) : visible.delete(i);
+        }
+        update();
+      });
+      pages.forEach((p) => observer.observe(p.el));
+      if (pages[0]) { visible.add(0); update(); }
+
+      let lastWidth = container.clientWidth;
+      let timer;
+      window.addEventListener("resize", () => {
+        postHeight();
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          if (container.clientWidth === lastWidth) return; // ignore mobile address-bar height changes
+          lastWidth = container.clientWidth;
+          update();
+        }, 200);
+      });
+    }
+
+    window.addEventListener("message", (e) => {
+      if (e.data?.type === "epk-height-request") postHeight();
+      if (e.data?.type === "epk-scroll-ack") scrollAcked = true;
+    });
+    window.addEventListener("load", postHeight);
+
+    load().catch((e) => {
+      console.error(e);
+      document.getElementById("error").style.display = "block";
+      postHeight();
+    });
+  </script>
+</body>
+</html>
